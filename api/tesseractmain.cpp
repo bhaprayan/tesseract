@@ -173,19 +173,24 @@ void PrintLangsList(tesseract::TessBaseAPI* api) {
   api->End();
 }
 
+void PrintBanner() {
+    tprintf("Tesseract Open Source OCR Engine v%s with Leptonica\n",
+           tesseract::TessBaseAPI::Version());
+}
+
 /**
  * We have 2 possible sources of pagesegmode: a config file and
  * the command line. For backwards compatibility reasons, the
-  * default in tesseract is tesseract::PSM_SINGLE_BLOCK, but the
-  * default for this program is tesseract::PSM_AUTO. We will let
-  * the config file take priority, so the command-line default
-  * can take priority over the tesseract default, so we use the
-  * value from the command line only if the retrieved mode
-  * is still tesseract::PSM_SINGLE_BLOCK, indicating no change
-  * in any config file. Therefore the only way to force
-  * tesseract::PSM_SINGLE_BLOCK is from the command line.
-  * It would be simpler if we could set the value before Init,
-  * but that doesn't work.
+ * default in tesseract is tesseract::PSM_SINGLE_BLOCK, but the
+ * default for this program is tesseract::PSM_AUTO. We will let
+ * the config file take priority, so the command-line default
+ * can take priority over the tesseract default, so we use the
+ * value from the command line only if the retrieved mode
+ * is still tesseract::PSM_SINGLE_BLOCK, indicating no change
+ * in any config file. Therefore the only way to force
+ * tesseract::PSM_SINGLE_BLOCK is from the command line.
+ * It would be simpler if we could set the value before Init,
+ * but that doesn't work.
  */
 void FixPageSegMode(tesseract::TessBaseAPI* api,
               tesseract::PageSegMode pagesegmode) {
@@ -275,12 +280,6 @@ void ParseArgs(const int argc, char** argv,
     PrintHelpMessage(argv[0]);
     exit(1);
   }
-
-  if (*outputbase != NULL && strcmp(*outputbase, "-") &&
-      strcmp(*outputbase, "stdout")) {
-    tprintf("Tesseract Open Source OCR Engine v%s with Leptonica\n",
-           tesseract::TessBaseAPI::Version());
-  }
 }
 
 void PreloadRenderers(tesseract::TessBaseAPI* api,
@@ -295,19 +294,38 @@ void PreloadRenderers(tesseract::TessBaseAPI* api,
     if (b) {
       bool font_info;
       api->GetBoolVariable("hocr_font_info", &font_info);
-      renderers->push_back(new tesseract::TessHOcrRenderer(outputbase, font_info));
+      renderers->push_back(
+                     new tesseract::TessHOcrRenderer(outputbase, font_info));
     }
+
+    api->GetBoolVariable("tessedit_create_tsv", &b);
+    if (b) {
+      bool font_info;
+      api->GetBoolVariable("hocr_font_info", &font_info);
+      renderers->push_back(
+          new tesseract::TessTsvRenderer(outputbase, font_info));
+    }
+
     api->GetBoolVariable("tessedit_create_pdf", &b);
     if (b) {
       renderers->push_back(new tesseract::TessPDFRenderer(outputbase,
-                                                         api->GetDatapath()));
+                                                        api->GetDatapath()));
     }
+
     api->GetBoolVariable("tessedit_write_unlv", &b);
-    if (b) renderers->push_back(new tesseract::TessUnlvRenderer(outputbase));
+    if (b) {
+      renderers->push_back(new tesseract::TessUnlvRenderer(outputbase));
+    }
+
     api->GetBoolVariable("tessedit_create_boxfile", &b);
-    if (b) renderers->push_back(new tesseract::TessBoxTextRenderer(outputbase));
+    if (b) {
+      renderers->push_back(new tesseract::TessBoxTextRenderer(outputbase));
+    }
+
     api->GetBoolVariable("tessedit_create_txt", &b);
-    if (b) renderers->push_back(new tesseract::TessTextRenderer(outputbase));
+    if (b || renderers->empty()) {
+      renderers->push_back(new tesseract::TessTextRenderer(outputbase));
+    }
   }
 
   if (!renderers->empty()) {
@@ -339,6 +357,12 @@ int main(int argc, char **argv) {
           &lang, &image, &outputbase, &datapath,
           &list_langs, &print_parameters,
           &vars_vec, &vars_values, &arg_i, &pagesegmode);
+
+  bool banner = false;
+  if (outputbase != NULL && strcmp(outputbase, "-") &&
+      strcmp(outputbase, "stdout")) {
+    banner = true;
+  }
 
   PERF_COUNT_START("Tesseract:main")
   tesseract::TessBaseAPI api;
@@ -401,15 +425,33 @@ int main(int argc, char **argv) {
     exit(ret_val);
   }
 
+  // set in_training_mode to true when using one of these configs:
+  // ambigs.train, box.train, box.train.stderr, linebox, rebox
+  bool b = false;
+  bool in_training_mode =
+        (api.GetBoolVariable("tessedit_ambigs_training", &b) && b) ||
+        (api.GetBoolVariable("tessedit_resegment_from_boxes", &b) && b) ||
+        (api.GetBoolVariable("tessedit_make_boxes_from_boxes", &b) && b);
+
   tesseract::PointerVector<tesseract::TessResultRenderer> renderers;
-  PreloadRenderers(&api, &renderers, pagesegmode, outputbase);
+
+
+
+  if (in_training_mode) {
+    renderers.push_back(NULL);
+  } else {
+    PreloadRenderers(&api, &renderers, pagesegmode, outputbase);
+  }
+
   if (!renderers.empty()) {
+    if (banner) PrintBanner();
     bool succeed = api.ProcessPages(image, NULL, 0, renderers[0]);
     if (!succeed) {
       fprintf(stderr, "Error during processing.\n");
       exit(1);
     }
   }
+
   PERF_COUNT_END
   return 0;                      // Normal exit
 }
